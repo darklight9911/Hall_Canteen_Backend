@@ -1,5 +1,6 @@
 from fastapi import status
 
+from app.core.emails import email_domain_allowed
 from app.core.errors import APIError
 from app.core.firebase import InvalidFirebaseToken, verify_firebase_id_token
 from app.core.security import hash_password, verify_password
@@ -22,6 +23,7 @@ class AuthService:
 
     async def register(self, email: str, password: str, full_name: str) -> tuple[User, str]:
         email = email.strip().lower()
+        self._assert_allowed_email(email)
         if await self.users.get_by_email(email) is not None:
             raise APIError(
                 status.HTTP_409_CONFLICT, "EMAIL_TAKEN", "An account with this email already exists"
@@ -37,6 +39,7 @@ class AuthService:
 
     async def login(self, email: str, password: str) -> tuple[User, str]:
         email = email.strip().lower()
+        self._assert_allowed_email(email)
         user = await self.users.get_by_email(email)
         if (
             user is None
@@ -68,6 +71,7 @@ class AuthService:
                 "INVALID_GOOGLE_TOKEN",
                 "Google token is missing required claims",
             )
+        self._assert_allowed_email(email)
         full_name = claims.get("name") or email.split("@")[0]
 
         user = await self.users.get_by_firebase_uid(firebase_uid)
@@ -91,6 +95,15 @@ class AuthService:
 
     async def logout(self, sid: str) -> None:
         await self.sessions.delete(sid)
+
+    @staticmethod
+    def _assert_allowed_email(email: str) -> None:
+        if not email_domain_allowed(email):
+            raise APIError(
+                status.HTTP_403_FORBIDDEN,
+                "EMAIL_DOMAIN_NOT_ALLOWED",
+                "Only @diu.edu.bd email addresses are allowed",
+            )
 
     @staticmethod
     def _assert_active(user: User) -> None:

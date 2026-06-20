@@ -32,6 +32,10 @@ class Settings(BaseSettings):
     session_cookie_samesite: Literal["lax", "strict", "none"] = "lax"
     session_cookie_domain: str | None = None
 
+    # Only accept sign-ups / logins from these email domains (apex + subdomains).
+    # Empty list disables the restriction.
+    allowed_email_domains: list[str] = ["diu.edu.bd"]
+
     # CORS
     backend_cors_origins: list[str] = ["http://localhost:3000"]
 
