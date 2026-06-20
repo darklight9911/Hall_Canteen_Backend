@@ -11,11 +11,13 @@ dependencies = [
     "pydantic>=2.10.0",
     "pydantic-settings>=2.6.0",
     "python-jose[cryptography]>=3.3.0",
-    "passlib[bcrypt]>=1.7.4",
     "redis[asyncio]>=5.2.0",
     "structlog>=24.4.0",
     "python-multipart>=0.0.18",
     "slowapi>=0.1.9",
+    "google-auth>=2.35.0",
+    "requests>=2.34.2",
+    "bcrypt>=5.0.0",
 ]
 
 [project.optional-dependencies]
@@ -41,6 +43,18 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI uses these as argument defaults by design.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Security",
+    "fastapi.Query",
+    "fastapi.Path",
+    "fastapi.Body",
+    "fastapi.Cookie",
+    "fastapi.Header",
+]
 
 [tool.mypy]
 python_version = "3.12"
