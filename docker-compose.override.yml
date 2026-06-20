@@ -1,0 +1,11 @@
+# Dev overrides: hot-reload volume mount, debug logging
+services:
+  api:
+    build:
+      target: development
+    volumes:
+      - .:/app
+    command: ["uv", "run", "fastapi", "dev", "app/main.py", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      LOG_LEVEL: DEBUG
+      ENVIRONMENT: development
