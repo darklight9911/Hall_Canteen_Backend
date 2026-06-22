@@ -39,10 +39,13 @@ async def get_current_user(
 
 
 def require_roles(*roles: Role) -> Callable[[User], Awaitable[User]]:
-    """Dependency factory enforcing that the current user has one of `roles`."""
+    """Dependency factory enforcing that the current user has one of `roles`.
+
+    The `developer` role is a superuser and is always allowed.
+    """
 
     async def _require(user: User = Depends(get_current_user)) -> User:
-        if user.role not in roles:
+        if user.role is not Role.developer and user.role not in roles:
             raise APIError(
                 status.HTTP_403_FORBIDDEN, "FORBIDDEN", "You do not have access to this resource"
             )

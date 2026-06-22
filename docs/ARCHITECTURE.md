@@ -42,39 +42,67 @@ another).
 
 ```mermaid
 flowchart LR
-    %% Use case diagram
-    student["👤 Student"]
-    staff["👤 Staff"]
-    admin["👤 Admin"]
+    %% Use case diagram - roles and access
+    student["👤 Student (default)"]
+    partner["👤 Partner (seller)"]
+    developer["👤 Developer (admin)"]
     google["🔌 Google / Firebase"]
 
     subgraph sys["Hall Canteen Backend"]
-        uc1(["Register with email"])
-        uc2(["Log in with email"])
-        uc3(["Sign in with Google"])
-        uc4(["View own profile"])
-        uc5(["Log out"])
-        uc6(["Validate DIU email"])
-        uc7(["Verify Firebase token"])
-        uc8(["Manage roles"])
+        a1(["Register"])
+        a2(["Log in"])
+        a3(["Sign in with Google"])
+        a4(["View own profile"])
+        a5(["Log out"])
+        s1(["Browse restaurants"])
+        s2(["Place and track orders"])
+        p1(["Manage own restaurant"])
+        p2(["List items and pricing"])
+        d1(["Manage users and roles"])
+        v1(["Validate DIU email"])
+        v2(["Verify Firebase token"])
     end
 
-    student --- uc1
-    student --- uc2
-    student --- uc3
-    student --- uc4
-    student --- uc5
-    staff --- uc2
-    staff --- uc3
-    admin --- uc2
-    admin --- uc8
+    student --- a1
+    student --- a2
+    student --- a3
+    student --- a4
+    student --- a5
+    student --- s1
+    student --- s2
+    partner --- a2
+    partner --- p1
+    partner --- p2
+    developer --- a2
+    developer --- d1
 
-    uc1 -. include .-> uc6
-    uc2 -. include .-> uc6
-    uc3 -. include .-> uc6
-    uc3 -. include .-> uc7
-    uc7 --- google
+    a1 -. include .-> v1
+    a2 -. include .-> v1
+    a3 -. include .-> v1
+    a3 -. include .-> v2
+    v2 --- google
 ```
+
+The authentication use cases (`a1`–`a5`) are available to **all** roles; only the
+role-specific ones are drawn per actor for clarity.
+
+### Roles & access control
+
+| Capability | Student (default) | Partner (seller) | Developer (admin) |
+|------------|:----------------:|:----------------:|:-----------------:|
+| Sign up / sign in / profile | ✅ | ✅ | ✅ |
+| Browse restaurants & items | ✅ | ✅ | ✅ |
+| Place & track orders | ✅ | — | ✅ |
+| Create / manage own restaurant | — | ✅ | ✅ |
+| List food items with details & pricing | — | ✅ | ✅ |
+| Manage users, roles & everything | — | — | ✅ |
+
+- **Default role is `student`**; promotion to `partner` or `developer` is manual
+  (`UPDATE users SET role='partner' WHERE email=…`).
+- **`developer` is a superuser** — `require_roles(...)` always permits it, so it
+  satisfies every role guard.
+- The student/partner capabilities above are enforced by `require_roles` as the
+  Menu and Orders modules are built; the auth layer and the guard are in place now.
 
 ## 2. Directory structure
 
@@ -120,7 +148,7 @@ Table `users` (PostgreSQL). `role` is the enum `user_role`.
 | `email` | varchar(320) | unique, indexed, lowercased |
 | `full_name` | varchar(255) | |
 | `hashed_password` | varchar(255) | nullable — null for Google-only accounts |
-| `role` | enum | `admin` / `staff` / `student` (default `student`) |
+| `role` | enum | `developer` / `partner` / `student` (default `student`) |
 | `firebase_uid` | varchar(128) | nullable, unique — set when linked to Google |
 | `is_active` | bool | default true |
 | `created_at` / `updated_at` | timestamptz | server defaults |

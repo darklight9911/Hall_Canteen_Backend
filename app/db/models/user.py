@@ -11,9 +11,9 @@ from app.db.session import Base
 
 
 class Role(enum.StrEnum):
-    admin = "admin"
-    staff = "staff"
-    student = "student"
+    developer = "developer"  # admin — full access
+    partner = "partner"  # seller — manages a restaurant and its items
+    student = "student"  # default — browses and orders
 
 
 class User(Base):

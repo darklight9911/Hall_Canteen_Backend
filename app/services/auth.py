@@ -38,8 +38,9 @@ class AuthService:
         return user, sid
 
     async def login(self, email: str, password: str) -> tuple[User, str]:
+        # No domain check on login — only existing (already-validated) accounts
+        # have credentials, and partners may have non-DIU (Google) emails.
         email = email.strip().lower()
-        self._assert_allowed_email(email)
         user = await self.users.get_by_email(email)
         if (
             user is None
@@ -71,13 +72,15 @@ class AuthService:
                 "INVALID_GOOGLE_TOKEN",
                 "Google token is missing required claims",
             )
-        self._assert_allowed_email(email)
         full_name = claims.get("name") or email.split("@")[0]
 
         user = await self.users.get_by_firebase_uid(firebase_uid)
         if user is None:
             existing = await self.users.get_by_email(email)
             if existing is None:
+                # Brand-new self-service account via the student path → enforce DIU.
+                # (Partners come through PartnerService.apply, which has no DIU check.)
+                self._assert_allowed_email(email)
                 user = await self.users.create(
                     email=email,
                     full_name=full_name,
