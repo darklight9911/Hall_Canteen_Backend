@@ -1,8 +1,8 @@
 # Hall Canteen — Backend System Design
 
-> Single source of truth for the FastAPI backend: architecture, mechanisms, data
-> model, authentication & session management, and operational concerns — with
-> Mermaid diagrams and workflow diagrams throughout.
+> Single source of truth for the FastAPI backend. All diagrams are **use case**,
+> **activity**, or **sequence** diagrams (Mermaid). Structural information is kept
+> as tables and text.
 
 **Stack:** FastAPI · Python 3.12 · async SQLAlchemy 2 + asyncpg (PostgreSQL) ·
 Redis (sessions) · Alembic · `uv` · structlog · Docker.
@@ -11,91 +11,72 @@ Redis (sessions) · Alembic · `uv` · structlog · Docker.
 
 ## Table of contents
 
-1. [System context](#1-system-context)
-2. [Layered architecture](#2-layered-architecture)
-3. [Directory structure](#3-directory-structure)
-4. [Request lifecycle](#4-request-lifecycle)
-5. [Data model](#5-data-model)
-6. [Authentication & session management](#6-authentication--session-management)
-   - [6.1 Design principles](#61-design-principles)
-   - [6.2 Redis session model](#62-redis-session-model)
-   - [6.3 Email + password registration](#63-email--password-registration)
-   - [6.4 Email + password login](#64-email--password-login)
-   - [6.5 Google (Firebase) sign-in](#65-google-firebase-sign-in)
-   - [6.6 Authenticated request](#66-authenticated-request)
-   - [6.7 Logout](#67-logout)
-   - [6.8 Session lifecycle](#68-session-lifecycle)
-7. [Authorization (roles)](#7-authorization-roles)
-8. [Email domain restriction (DIU)](#8-email-domain-restriction-diu)
-9. [Configuration](#9-configuration)
-10. [Error model](#10-error-model)
-11. [Security model](#11-security-model)
-12. [Deployment](#12-deployment)
-13. [Roadmap](#13-roadmap)
+1. [Use case diagram](#1-use-case-diagram)
+2. [Directory structure](#2-directory-structure)
+3. [Data model](#3-data-model)
+4. [Workflows — activity diagrams](#4-workflows--activity-diagrams)
+   - [4.1 Registration](#41-registration)
+   - [4.2 Email login](#42-email-login)
+   - [4.3 Google sign-in](#43-google-sign-in)
+   - [4.4 Authenticated request & session validation](#44-authenticated-request--session-validation)
+   - [4.5 Authorization (role check)](#45-authorization-role-check)
+5. [Interactions — sequence diagrams](#5-interactions--sequence-diagrams)
+   - [5.1 Registration](#51-registration)
+   - [5.2 Email login](#52-email-login)
+   - [5.3 Google sign-in](#53-google-sign-in)
+   - [5.4 Authenticated request (/auth/me)](#54-authenticated-request-authme)
+   - [5.5 Logout](#55-logout)
+6. [Redis session model](#6-redis-session-model)
+7. [Configuration](#7-configuration)
+8. [Error model](#8-error-model)
+9. [Security model](#9-security-model)
+10. [Deployment](#10-deployment)
 
 ---
 
-## 1. System context
+## 1. Use case diagram
+
+Actors and the use cases they can perform. The system boundary holds the use
+cases; dotted arrows show `include` relationships (a use case always invokes
+another).
 
 ```mermaid
 flowchart LR
-    subgraph Client
-      B["Browser (Next.js app)"]
-    end
-    subgraph Google
-      FB["Firebase Auth / Google"]
-    end
-    subgraph Backend["FastAPI backend :8000"]
-      API["/api/v1 routers/"]
-    end
-    DB[("PostgreSQL :5440")]
-    RD[("Redis :6382")]
+    %% Use case diagram
+    student["👤 Student"]
+    staff["👤 Staff"]
+    admin["👤 Admin"]
+    google["🔌 Google / Firebase"]
 
-    B -- "Google popup" --> FB
-    B -- "HTTPS + cookie (credentials: include)" --> API
-    API -- "verify ID token (google-auth)" --> FB
-    API -- "async SQLAlchemy / asyncpg" --> DB
-    API -- "sessions (redis.asyncio)" --> RD
+    subgraph sys["Hall Canteen Backend"]
+        uc1(["Register with email"])
+        uc2(["Log in with email"])
+        uc3(["Sign in with Google"])
+        uc4(["View own profile"])
+        uc5(["Log out"])
+        uc6(["Validate DIU email"])
+        uc7(["Verify Firebase token"])
+        uc8(["Manage roles"])
+    end
+
+    student --- uc1
+    student --- uc2
+    student --- uc3
+    student --- uc4
+    student --- uc5
+    staff --- uc2
+    staff --- uc3
+    admin --- uc2
+    admin --- uc8
+
+    uc1 -. include .-> uc6
+    uc2 -. include .-> uc6
+    uc3 -. include .-> uc6
+    uc3 -. include .-> uc7
+    uc7 --- google
 ```
 
-- The browser authenticates the user (Google popup **or** email/password) and
-  talks to the backend with an **httpOnly session cookie**.
-- The backend is the **source of truth** for identity and sessions. It verifies
-  Firebase ID tokens, persists users in PostgreSQL, and stores opaque sessions in
-  Redis.
-
-## 2. Layered architecture
-
-The codebase follows a strict **Repository pattern** — services never touch the
-ORM directly; HTTP concerns never leak into services.
-
-```mermaid
-flowchart TD
-    R["API layer<br/>app/api/v1/endpoints + router"]
-    D["Dependencies<br/>get_current_user, require_roles, get_db, get_redis"]
-    S["Service layer<br/>AuthService, SessionStore"]
-    Repo["Repository layer<br/>UserRepository"]
-    M["Models / ORM<br/>User (SQLAlchemy)"]
-    Core["Core<br/>config, security, firebase, redis, errors, emails, logging"]
-
-    R --> D
-    R --> S
-    D --> S
-    S --> Repo
-    Repo --> M
-    S -.uses.-> Core
-    R -.uses.-> Core
-```
-
-| Layer | Responsibility | Must NOT |
-|-------|----------------|----------|
-| API (endpoints) | HTTP I/O, cookies, status codes, response models | contain business rules |
-| Dependencies | resolve DB/Redis, authenticate, authorize | hold state |
-| Services | business rules, orchestration | format HTTP / touch the ORM |
-| Repositories | all ORM access | contain business rules |
-| Core | cross-cutting utilities (hash, token verify, Redis client, errors) | depend on API |
-
-## 3. Directory structure
+## 2. Directory structure
 
 ```
 backend/
@@ -123,91 +104,123 @@ backend/
 │       ├── endpoints/auth.py        # /auth/{register,login,login/google,logout,me}
 │       └── dependencies/auth.py     # get_current_user, require_roles
 ├── docs/ARCHITECTURE.md             # ← this document
-├── alembic.ini · pyproject.toml · uv.lock · Dockerfile · docker-compose.yml
+└── alembic.ini · pyproject.toml · uv.lock · Dockerfile · docker-compose.yml
 ```
 
-## 4. Request lifecycle
+**Layering (Repository pattern):** API → dependencies → services → repositories →
+models. Services never touch the ORM directly; HTTP concerns never enter services.
+
+## 3. Data model
+
+Table `users` (PostgreSQL). `role` is the enum `user_role`.
+
+| Column | Type | Notes |
+|--------|------|-------|
+| `id` | uuid | primary key |
+| `email` | varchar(320) | unique, indexed, lowercased |
+| `full_name` | varchar(255) | |
+| `hashed_password` | varchar(255) | nullable — null for Google-only accounts |
+| `role` | enum | `admin` / `staff` / `student` (default `student`) |
+| `firebase_uid` | varchar(128) | nullable, unique — set when linked to Google |
+| `is_active` | bool | default true |
+| `created_at` / `updated_at` | timestamptz | server defaults |
+
+Migrations are forward-only (Alembic); `0001_create_users` creates the enum,
+table, and unique indexes on `email` and `firebase_uid`.
+
+## 4. Workflows — activity diagrams
+
+### 4.1 Registration
 
 ```mermaid
 flowchart TD
-    A["HTTP request"] --> CORS["CORS middleware<br/>(allow_credentials, explicit origins)"]
-    CORS --> Route["Route match (/api/v1/...)"]
-    Route --> Dep["Resolve dependencies<br/>get_db, get_redis, get_current_user?"]
-    Dep --> H["Endpoint handler"]
-    H --> Svc["Service (business rules)"]
-    Svc --> Repo["Repository / Redis"]
-    Repo --> Svc --> H
-    H --> Resp["Response (response_model + Set-Cookie)"]
-    H -. raises APIError .-> EH["api_error_handler"]
-    EH --> ErrResp["JSON {detail, code}"]
+    %% Activity diagram - registration
+    start([Start]) --> a1["Receive email, password, full name"]
+    a1 --> d1{"DIU email?"}
+    d1 -- no --> e1["Return 403 EMAIL_DOMAIN_NOT_ALLOWED"] --> stop([End])
+    d1 -- yes --> d2{"Email already registered?"}
+    d2 -- yes --> e2["Return 409 EMAIL_TAKEN"] --> stop
+    d2 -- no --> a2["Hash password with bcrypt"]
+    a2 --> a3["Create user with role student"]
+    a3 --> a4["Create Redis session"]
+    a4 --> a5["Set httpOnly cookie and return 201"]
+    a5 --> stop
 ```
 
-- A shared **async Redis client** is created in the FastAPI `lifespan` and stored
-  on `app.state.redis`; `get_redis` hands it to dependencies. Connections are
-  lazy, so startup never blocks on Redis.
-- A new **async SQLAlchemy session** is created per request by `get_db`.
-
-## 5. Data model
+### 4.2 Email login
 
 ```mermaid
-erDiagram
-    USERS {
-        uuid     id PK
-        string   email          "unique, indexed, lowercased"
-        string   full_name
-        string   hashed_password "nullable — null for Google-only accounts"
-        enum     role           "admin | staff | student (default student)"
-        string   firebase_uid    "nullable, unique — set when linked to Google"
-        bool     is_active       "default true"
-        datetime created_at
-        datetime updated_at
-    }
+flowchart TD
+    %% Activity diagram - email login
+    start([Start]) --> a1["Receive email and password"]
+    a1 --> d1{"DIU email?"}
+    d1 -- no --> e1["Return 403 EMAIL_DOMAIN_NOT_ALLOWED"] --> stop([End])
+    d1 -- yes --> a2["Look up user by email"]
+    a2 --> d2{"User exists and password matches?"}
+    d2 -- no --> e2["Return 401 INVALID_CREDENTIALS"] --> stop
+    d2 -- yes --> d3{"Account active?"}
+    d3 -- no --> e3["Return 403 ACCOUNT_DISABLED"] --> stop
+    d3 -- yes --> a3["Create Redis session"]
+    a3 --> a4["Set httpOnly cookie and return 200"]
+    a4 --> stop
 ```
 
-- One table today (`users`). `role` is a PostgreSQL enum `user_role`.
-- An account may have a password, a Firebase identity, or **both** (a password
-  user who later signs in with the same Google email gets the `firebase_uid`
-  linked).
-- Migrations are **forward-only** (Alembic). The first migration
-  `0001_create_users` creates the enum + table + unique indexes on `email` and
-  `firebase_uid`.
-
-## 6. Authentication & session management
-
-### 6.1 Design principles
-
-- **Opaque, server-side sessions** stored in Redis — *not* a JWT in the cookie.
-  This makes sessions **revocable**, keeps secrets server-side, and lets us
-  invalidate all of a user's sessions instantly.
-- The session id is a 256-bit random token (`secrets.token_urlsafe(32)`),
-  delivered to the browser **only** as an `HttpOnly` cookie (`hc_session`).
-- **Firebase is an identity provider** (it proves "this is a valid Google user");
-  the backend issues and owns the session. Firebase ID tokens are verified with
-  `google-auth` against Google's public keys — **no service-account secret
-  required**.
-- Two credential paths, **one session mechanism**: email/password and Google
-  both converge on `SessionStore.create()`.
-
-### 6.2 Redis session model
+### 4.3 Google sign-in
 
 ```mermaid
-flowchart LR
-    C["Cookie: hc_session = &lt;sid&gt;"] --> K1["session:&lt;sid&gt;<br/>JSON {user_id, role, email}<br/>TTL = 7d (sliding)"]
-    U["user_sessions:&lt;user_id&gt;<br/>SET of sids"] --> K1
+flowchart TD
+    %% Activity diagram - Google sign-in
+    start([Start]) --> a1["Receive Firebase ID token"]
+    a1 --> a2["Verify token against Google public keys"]
+    a2 --> d1{"Token valid?"}
+    d1 -- no --> e1["Return 401 INVALID_GOOGLE_TOKEN"] --> stop([End])
+    d1 -- yes --> a3["Extract uid, email, name"]
+    a3 --> d2{"DIU email?"}
+    d2 -- no --> e2["Return 403 EMAIL_DOMAIN_NOT_ALLOWED"] --> stop
+    d2 -- yes --> d3{"User found by firebase_uid or email?"}
+    d3 -- "found by uid" --> a6["Use existing user"]
+    d3 -- "found by email" --> a5["Link firebase_uid to account"]
+    d3 -- "not found" --> a4["Create user with role student"]
+    a4 --> a7["Create Redis session"]
+    a5 --> a7
+    a6 --> a7
+    a7 --> a8["Set httpOnly cookie and return 200"]
+    a8 --> stop
 ```
 
-| Key | Type | Value | TTL |
-|-----|------|-------|-----|
-| `session:<sid>` | string | `{"user_id","role","email"}` | 7 days, **refreshed on every authenticated read** (sliding expiration) |
-| `user_sessions:<user_id>` | set | all active `sid`s for the user | 7 days |
+### 4.4 Authenticated request & session validation
 
-- `create(user)` → new sid, `SET session:<sid>` with TTL, add sid to the user's
-  set. Returns the sid.
-- `get(sid)` → read JSON; if present, **refresh the TTL** and return it; else `None`.
-- `delete(sid)` → remove the key and de-index it from the user's set.
-- `delete_all_for_user(user_id)` → revoke every session for a user.
+```mermaid
+flowchart TD
+    %% Activity diagram - session validation on a protected request
+    start([Start]) --> a1["Read hc_session cookie"]
+    a1 --> d1{"Cookie present?"}
+    d1 -- no --> e1["Return 401 NOT_AUTHENTICATED"] --> stop([End])
+    d1 -- yes --> a2["Look up session in Redis"]
+    a2 --> d2{"Session found?"}
+    d2 -- no --> e2["Return 401 SESSION_EXPIRED"] --> stop
+    d2 -- yes --> a3["Refresh session TTL (sliding expiration)"]
+    a3 --> a4["Load user from database"]
+    a4 --> d3{"User exists and active?"}
+    d3 -- no --> e3["Return 401 NOT_AUTHENTICATED"] --> stop
+    d3 -- yes --> a5["Proceed to handler with current user"]
+    a5 --> stop
+```
 
-### 6.3 Email + password registration
+### 4.5 Authorization (role check)
+
+```mermaid
+flowchart TD
+    %% Activity diagram - require_roles guard
+    start([Start]) --> a1["Resolve current user (session validated)"]
+    a1 --> d1{"User role in allowed roles?"}
+    d1 -- yes --> a2["Execute protected handler"] --> stop([End])
+    d1 -- no --> e1["Return 403 FORBIDDEN"] --> stop
+```
+
+## 5. Interactions — sequence diagrams
+
+### 5.1 Registration
 
 ```mermaid
 sequenceDiagram
@@ -216,28 +229,25 @@ sequenceDiagram
     participant EP as POST /auth/register
     participant SV as AuthService
     participant UR as UserRepository
-    participant PG as PostgreSQL
     participant SS as SessionStore
     participant RD as Redis
 
-    FE->>EP: {email, password, full_name}
-    EP->>SV: register(...)
-    SV->>SV: normalize email; assert @diu.edu.bd
-    SV->>UR: get_by_email(email)
-    UR->>PG: SELECT
+    FE->>EP: email, password, full_name
+    EP->>SV: register
+    SV->>SV: normalize email and assert DIU domain
+    SV->>UR: get_by_email
     alt email exists
         SV-->>EP: APIError 409 EMAIL_TAKEN
-    else new
-        SV->>UR: create(email, full_name, bcrypt(password), role=student)
-        UR->>PG: INSERT
-        SV->>SS: create(user)
-        SS->>RD: SET session:&lt;sid&gt; (TTL)
-        SV-->>EP: (user, sid)
-        EP-->>FE: 201 UserRead + Set-Cookie hc_session (HttpOnly)
+    else new account
+        SV->>UR: create user (bcrypt password, role student)
+        SV->>SS: create session
+        SS->>RD: SET session key with TTL
+        SV-->>EP: user and session id
+        EP-->>FE: 201 user and Set-Cookie hc_session
     end
 ```
 
-### 6.4 Email + password login
+### 5.2 Email login
 
 ```mermaid
 sequenceDiagram
@@ -248,86 +258,75 @@ sequenceDiagram
     participant UR as UserRepository
     participant SS as SessionStore
 
-    FE->>EP: {email, password}
-    EP->>SV: login(...)
-    SV->>SV: normalize email; assert @diu.edu.bd
-    SV->>UR: get_by_email(email)
-    alt no user / no password / bad password
+    FE->>EP: email and password
+    EP->>SV: login
+    SV->>SV: normalize email and assert DIU domain
+    SV->>UR: get_by_email
+    alt invalid credentials
         SV-->>EP: APIError 401 INVALID_CREDENTIALS
-    else valid + active
-        SV->>SS: create(user)
-        SV-->>EP: (user, sid)
-        EP-->>FE: 200 UserRead + Set-Cookie hc_session
+    else valid and active
+        SV->>SS: create session
+        SV-->>EP: user and session id
+        EP-->>FE: 200 user and Set-Cookie hc_session
     end
 ```
 
-> Password verification uses **bcrypt directly** (the abandoned `passlib`
-> crashes on bcrypt 5.x). Passwords are truncated to bcrypt's 72-byte limit.
-
-### 6.5 Google (Firebase) sign-in
+### 5.3 Google sign-in
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant U as User
-    participant FB as Firebase (browser SDK)
+    participant FB as Firebase (browser)
     participant FE as Frontend
     participant EP as POST /auth/login/google
-    participant FV as firebase.verify_id_token (google-auth)
+    participant FV as Firebase verify (google-auth)
     participant SV as AuthService
     participant UR as UserRepository
     participant SS as SessionStore
 
     U->>FB: Google popup
-    FB-->>FE: ID token (JWT)
-    FE->>EP: {id_token}
-    EP->>FV: verify against Google public keys (audience = project id)
-    alt invalid
+    FB-->>FE: ID token
+    FE->>EP: id_token
+    EP->>FV: verify token against Google keys
+    alt invalid token
         FV-->>EP: InvalidFirebaseToken
         EP-->>FE: 401 INVALID_GOOGLE_TOKEN
-    else valid
-        FV-->>SV: claims {uid, email, name}
-        SV->>SV: assert @diu.edu.bd
-        SV->>UR: get_by_firebase_uid / get_by_email
-        Note over SV,UR: find → or link uid to existing email → or create (role student)
-        SV->>SS: create(user)
-        EP-->>FE: 200 UserRead + Set-Cookie hc_session
+    else valid token
+        FV-->>SV: claims uid, email, name
+        SV->>SV: assert DIU domain
+        SV->>UR: find by firebase_uid or email, else create or link
+        SV->>SS: create session
+        EP-->>FE: 200 user and Set-Cookie hc_session
     end
 ```
 
-Token verification runs in a thread pool (`run_in_threadpool`) because
-`google-auth` performs blocking HTTP to fetch Google's signing certificates.
-
-### 6.6 Authenticated request
+### 5.4 Authenticated request (/auth/me)
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant FE as Frontend
-    participant EP as GET /auth/me (any protected route)
+    participant EP as GET /auth/me
     participant DEP as get_current_user
     participant SS as SessionStore
     participant RD as Redis
     participant UR as UserRepository
 
-    FE->>EP: request + Cookie hc_session
+    FE->>EP: request with hc_session cookie
     EP->>DEP: resolve dependency
-    DEP->>SS: get(sid)
-    SS->>RD: GET session:&lt;sid&gt; + refresh TTL
-    alt missing/expired
-        DEP-->>FE: 401 SESSION_EXPIRED / NOT_AUTHENTICATED
+    DEP->>SS: get session id
+    SS->>RD: GET session and refresh TTL
+    alt missing or expired
+        DEP-->>FE: 401 SESSION_EXPIRED or NOT_AUTHENTICATED
     else found
-        DEP->>UR: get_by_id(user_id)
-        Note over DEP,UR: re-load user → enforces is_active + current role
-        DEP-->>EP: User
-        EP-->>FE: 200 UserRead
+        DEP->>UR: get_by_id (re-check active and role)
+        DEP-->>EP: current user
+        EP-->>FE: 200 user
     end
 ```
 
-The user is **re-loaded from the DB** on each request (not trusted from the
-session blob alone), so deactivation and role changes take effect immediately.
-
-### 6.7 Logout
+### 5.5 Logout
 
 ```mermaid
 sequenceDiagram
@@ -336,59 +335,30 @@ sequenceDiagram
     participant EP as POST /auth/logout
     participant SS as SessionStore
     participant RD as Redis
-    FE->>EP: request + Cookie
-    EP->>SS: delete(sid)
-    SS->>RD: DEL session:&lt;sid&gt; + de-index
-    EP-->>FE: 204 + clear cookie
+
+    FE->>EP: request with cookie
+    EP->>SS: delete session id
+    SS->>RD: DEL session key and de-index
+    EP-->>FE: 204 and clear cookie
 ```
 
-### 6.8 Session lifecycle
+## 6. Redis session model
 
-```mermaid
-stateDiagram-v2
-    [*] --> Anonymous
-    Anonymous --> Active: register / login / google (Set-Cookie)
-    Active --> Active: authenticated request (TTL refreshed)
-    Active --> Expired: 7d idle (Redis TTL elapses)
-    Active --> Revoked: logout / delete_all_for_user
-    Expired --> Anonymous
-    Revoked --> Anonymous
-```
+Opaque, server-side sessions (not a JWT in the cookie) → revocable, secrets stay
+server-side. The session id is a 256-bit random token, sent only as an `HttpOnly`
+cookie named `hc_session`.
 
-## 7. Authorization (roles)
+| Key | Type | Value | TTL |
+|-----|------|-------|-----|
+| `session:<sid>` | string | JSON with `user_id`, `role`, `email` | 7 days, refreshed on every authenticated read (sliding) |
+| `user_sessions:<user_id>` | set | all active session ids for the user | 7 days |
 
-```mermaid
-flowchart LR
-    Req["Request"] --> GCU["get_current_user"]
-    GCU --> RR["require_roles(admin, staff?)"]
-    RR -->|role allowed| OK["handler"]
-    RR -->|role not allowed| F["403 FORBIDDEN"]
-```
+`SessionStore` operations: `create`, `get` (refreshes TTL), `delete`,
+`delete_all_for_user` (revoke every session for one user).
 
-- Roles: `admin` · `staff` · `student` (default). New accounts are always
-  `student`; promotion is manual (`UPDATE users SET role='admin' WHERE email=…`).
-- `require_roles(*roles)` is a dependency factory used to guard endpoints, e.g.
-  `Depends(require_roles(Role.admin))` for reports.
+## 7. Configuration
 
-## 8. Email domain restriction (DIU)
-
-Only DIU institutional emails may register or sign in. Enforced in the service
-layer for **all** credential paths (register, login, Google).
-
-```mermaid
-flowchart TD
-    E["email"] --> N["lowercase, take domain after @"]
-    N --> C{"domain == diu.edu.bd<br/>or *.diu.edu.bd?"}
-    C -->|yes| Allow["continue"]
-    C -->|no| Deny["403 EMAIL_DOMAIN_NOT_ALLOWED"]
-```
-
-- Configured by `allowed_email_domains` (default `["diu.edu.bd"]`); accepts the
-  apex domain and any subdomain (e.g. `s.diu.edu.bd`). An empty list disables it.
-
-## 9. Configuration
-
-`app/core/config.py` (pydantic-settings, read from `.env`). Highlights:
+`app/core/config.py` (pydantic-settings, read from `.env`):
 
 | Setting | Env var | Default | Notes |
 |---------|---------|---------|-------|
@@ -396,24 +366,19 @@ flowchart TD
 | `redis_url` | `REDIS_URL` | `redis://localhost:6379/0` | `…:6382/0` locally |
 | `secret_key` | `SECRET_KEY` | — | required |
 | `firebase_project_id` | `FIREBASE_PROJECT_ID` | `None` | required for Google sign-in |
-| `session_cookie_name` | — | `hc_session` | |
-| `session_ttl_seconds` | `SESSION_TTL_SECONDS` | `604800` (7d) | sliding |
-| `session_cookie_secure` | `SESSION_COOKIE_SECURE` | `false` | **`true` in prod (HTTPS)** |
-| `session_cookie_samesite` | `SESSION_COOKIE_SAMESITE` | `lax` | **`none` for cross-site prod** |
+| `session_ttl_seconds` | `SESSION_TTL_SECONDS` | `604800` | sliding |
+| `session_cookie_secure` | `SESSION_COOKIE_SECURE` | `false` | **true in prod** |
+| `session_cookie_samesite` | `SESSION_COOKIE_SAMESITE` | `lax` | **none for cross-site prod** |
 | `allowed_email_domains` | `ALLOWED_EMAIL_DOMAINS` | `["diu.edu.bd"]` | JSON array |
 | `backend_cors_origins` | `BACKEND_CORS_ORIGINS` | `["http://localhost:3000"]` | JSON array |
 
-## 10. Error model
+## 8. Error model
 
-All domain errors raise `APIError(status_code, code, detail)` and are rendered by
-a single handler as:
+Domain errors raise `APIError(status, code, detail)`, rendered as
+`{ "detail": "...", "code": "SNAKE_CASE_CODE" }`.
 
-```json
-{ "detail": "Human readable message", "code": "SNAKE_CASE_CODE" }
-```
-
-| Code | HTTP | Raised when |
-|------|------|-------------|
+| Code | HTTP | When |
+|------|------|------|
 | `NOT_AUTHENTICATED` | 401 | no/invalid session cookie |
 | `SESSION_EXPIRED` | 401 | session missing/expired in Redis |
 | `INVALID_CREDENTIALS` | 401 | bad email/password |
@@ -423,71 +388,27 @@ a single handler as:
 | `ACCOUNT_DISABLED` | 403 | `is_active = false` |
 | `FORBIDDEN` | 403 | role not permitted |
 
-## 11. Security model
+## 9. Security model
 
-```mermaid
-mindmap
-  root((Security))
-    Sessions
-      Opaque random id - 256 bit
-      Server-side in Redis - revocable
-      Sliding TTL
-    Cookie
-      HttpOnly - no JS access
-      Secure in prod
-      SameSite lax or none
-    Credentials
-      bcrypt with per-password salt
-      72-byte truncation
-      No password for Google-only accounts
-    Identity
-      Firebase ID token verified vs Google keys
-      audience equals project id
-    Policy
-      DIU email allow-list
-      Role-based guards
-      User re-loaded each request
-    Transport
-      CORS explicit origins plus credentials
-      Structured detail and code errors
-```
+- **Sessions:** opaque 256-bit id, server-side in Redis, revocable, sliding TTL.
+- **Cookie:** `HttpOnly`, `Secure` in production, `SameSite` lax/none.
+- **Passwords:** bcrypt with per-password salt, 72-byte truncation; Google-only
+  accounts store no password.
+- **Identity:** Firebase ID tokens verified against Google's public keys with the
+  project id as audience.
+- **Policy:** DIU email allow-list and role-based guards; the user is re-loaded
+  from the database each request so deactivation and role changes apply at once.
+- **Transport:** CORS restricted to explicit origins with credentials; structured
+  `{detail, code}` errors.
 
-## 12. Deployment
+## 10. Deployment
 
-```mermaid
-flowchart LR
-    subgraph Prod["Production (when hosted)"]
-      FEp["Frontend (HTTPS)"]
-      BEp["FastAPI (uvicorn, Dockerfile prod target)"]
-      PGp[("Managed PostgreSQL")]
-      RDp[("Managed Redis")]
-    end
-    FEp -- "same-site /api proxy → first-party cookie" --> BEp
-    BEp --> PGp
-    BEp --> RDp
-```
-
-- The `Dockerfile` has `development` (fastapi dev) and `production` (uvicorn,
-  4 workers, non-root) targets; `docker-compose.yml` wires Postgres + Redis +
-  API with healthchecks.
-- **Production checklist:** `SESSION_COOKIE_SECURE=true`,
-  `SESSION_COOKIE_SAMESITE=none` (cross-site) **or** serve the frontend and API
-  on the same site so the cookie stays first-party; add the frontend origin to
+- `Dockerfile` has `development` (fastapi dev) and `production` (uvicorn, 4
+  workers, non-root) targets; `docker-compose.yml` wires Postgres + Redis + API
+  with healthchecks.
+- **Production:** set `SESSION_COOKIE_SECURE=true` and
+  `SESSION_COOKIE_SAMESITE=none` (cross-site) — or serve frontend and API on the
+  same site so the cookie stays first-party; add the frontend origin to
   `BACKEND_CORS_ORIGINS`; run `alembic upgrade head` on release.
-- Local run: `docker compose up -d postgres redis && make migrate`, then
+- **Local:** `docker compose up -d postgres redis && make migrate`, then
   `uv run fastapi dev app/main.py`.
-
-## 13. Roadmap
-
-Phased domain modules (auth is complete; the rest reuse these layers):
-
-```mermaid
-flowchart LR
-    A["✅ Auth + sessions"] --> M["Menu (CRUD + Redis cache 5m)"]
-    M --> O["Orders (lifecycle + SSE)"]
-    O --> Bi["Billing (invoices, CSV)"]
-    Bi --> Rp["Reports (admin only)"]
-```
-
-Each new module adds: a model + migration, a repository, a service, schemas, a
-router under `/api/v1`, and role guards via `require_roles`.
