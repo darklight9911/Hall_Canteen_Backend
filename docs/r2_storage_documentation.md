@@ -26,23 +26,26 @@ Currently, the R2 storage is used in the following workflows:
 The use case diagram illustrates the actors interacting with the system to trigger file uploads to the R2 bucket.
 
 ```mermaid
-usecase
-    actor "User / Partner (Client)" as Client
-    actor "Cloudflare R2 Bucket" as R2
+flowchart LR
+    %% Actors
+    Client((User / Partner\nClient))
+    R2[(Cloudflare\nR2 Bucket)]
 
-    rectangle "Hall Canteen Backend" {
-        usecase "Upload Avatar Image" as UC1
-        usecase "Submit Partner Application Photo" as UC2
-        usecase "Process Base64 Image Data" as UC3
-        usecase "Store Object & Generate URL" as UC4
-    }
+    %% System Boundary
+    subgraph Backend [Hall Canteen Backend]
+        UC1([Upload Avatar Image])
+        UC2([Submit Partner Application Photo])
+        UC3([Process Base64 Image Data])
+        UC4([Store Object & Generate URL])
+    end
 
+    %% Relationships
     Client --> UC1
     Client --> UC2
     
-    UC1 ..> UC3 : <<includes>>
-    UC2 ..> UC3 : <<includes>>
-    UC3 ..> UC4 : <<includes>>
+    UC1 -.->|includes| UC3
+    UC2 -.->|includes| UC3
+    UC3 -.->|includes| UC4
     
     UC4 --> R2
 ```
@@ -54,44 +57,43 @@ usecase
 The activity diagram shows the step-by-step logical flow of the `upload_data_url` function, which is the core utility for handling R2 uploads.
 
 ```mermaid
-activity
-    start
-    :Client submits Base64 Data URL;
+flowchart TD
+    Start((Start)) --> A[Client submits Base64 Data URL]
     
-    if (Is URL already a valid HTTP/HTTPS link?) then (Yes)
-        :Return URL as-is (Idempotent);
-        stop
-    else (No)
-        :Regex match Data URL;
-        if (Valid Data URL format?) then (Yes)
-            :Extract MIME type & Extension;
-            :Decode Base64 to Bytes;
-            if (Decode successful & not empty?) then (Yes)
-                :Check Byte Size;
-                if (Size <= Max Allowed Size?) then (Yes)
-                    :Generate unique Key (Prefix + UUID + Ext);
-                    :boto3 client put_object to R2;
-                    if (Upload successful?) then (Yes)
-                        :Construct Public URL;
-                        :Return Public URL;
-                        stop
-                    else (No)
-                        :Throw StorageUploadError (502);
-                        stop
-                    endif
-                else (No)
-                    :Throw StorageError (400 - File Too Large);
-                    stop
-                endif
-            else (No)
-                :Throw StorageError (400 - Invalid Base64/Empty);
-                stop
-            endif
-        else (No)
-            :Throw StorageError (400 - Invalid Format);
-            stop
-        endif
-    endif
+    A --> B{Is URL already a valid\nHTTP/HTTPS link?}
+    
+    B -- Yes --> C[Return URL as-is\nIdempotent]
+    C --> Stop1((Stop))
+    
+    B -- No --> D[Regex match Data URL]
+    D --> E{Valid Data URL\nformat?}
+    
+    E -- No --> F[Throw StorageError\n400 - Invalid Format]
+    F --> Stop2((Stop))
+    
+    E -- Yes --> G[Extract MIME type & Extension]
+    G --> H[Decode Base64 to Bytes]
+    H --> I{Decode successful\n& not empty?}
+    
+    I -- No --> J[Throw StorageError\n400 - Invalid Base64/Empty]
+    J --> Stop3((Stop))
+    
+    I -- Yes --> K[Check Byte Size]
+    K --> L{Size <= Max\nAllowed Size?}
+    
+    L -- No --> M[Throw StorageError\n400 - File Too Large]
+    M --> Stop4((Stop))
+    
+    L -- Yes --> N[Generate unique Key\nPrefix + UUID + Ext]
+    N --> O[boto3 client put_object to R2]
+    O --> P{Upload\nsuccessful?}
+    
+    P -- No --> Q[Throw StorageUploadError\n502]
+    Q --> Stop5((Stop))
+    
+    P -- Yes --> R[Construct Public URL]
+    R --> S[Return Public URL]
+    S --> Stop6((Stop))
 ```
 
 ---
