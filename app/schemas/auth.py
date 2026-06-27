@@ -27,3 +27,9 @@ class UserRead(BaseModel):
     email: EmailStr
     full_name: str
     role: Role
+    avatar: str | None = None
+
+
+class UserUpdateRequest(BaseModel):
+    full_name: str | None = Field(default=None, max_length=255)
+    avatar: str | None = None

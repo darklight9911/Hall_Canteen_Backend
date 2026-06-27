@@ -9,7 +9,13 @@ from app.core.redis import get_redis
 from app.db.models.user import User
 from app.db.session import get_db
 from app.repositories.user import UserRepository
-from app.schemas.auth import GoogleLoginRequest, LoginRequest, RegisterRequest, UserRead
+from app.schemas.auth import (
+    GoogleLoginRequest,
+    LoginRequest,
+    RegisterRequest,
+    UserRead,
+    UserUpdateRequest,
+)
 from app.services.auth import AuthService
 from app.services.session import SessionStore
 
@@ -71,3 +77,17 @@ async def logout(
 @router.get("/me", response_model=UserRead)
 async def me(user: User = Depends(get_current_user)) -> User:
     return user
+
+
+@router.patch("/me", response_model=UserRead)
+async def update_me(
+    body: UserUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+) -> User:
+    return await _service(db, redis).update_profile(
+        user,
+        full_name=body.full_name,
+        avatar=body.avatar,
+    )

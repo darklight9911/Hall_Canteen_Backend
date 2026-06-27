@@ -5,6 +5,7 @@ from fastapi import status
 
 from app.core.errors import APIError
 from app.core.firebase import InvalidFirebaseToken, verify_firebase_id_token
+from app.core.storage import StorageError, StorageUploadError, upload_data_url
 from app.db.models.food_item import FoodItem
 from app.db.models.partner_application import ApplicationStatus, PartnerApplication
 from app.db.models.restaurant import Restaurant
@@ -91,19 +92,29 @@ class PartnerService:
                 "You already have a partner application in progress",
             )
 
+        photo_url = await self._store_image(photo, prefix="partner-applications")
         app = await self.applications.create(
             user_id=user.id,
             phone=phone.strip(),
             full_name=full_name.strip(),
             shop_name=shop_name.strip(),
             location=location.strip(),
-            photo=photo,
+            photo=photo_url,
         )
         sid = await self.sessions.create(user)
         return user, app, sid
 
     async def get_user_application(self, user: User) -> PartnerApplication | None:
         return await self.applications.get_by_user(user.id)
+
+    async def _store_image(self, data_url: str, *, prefix: str) -> str:
+        """Upload the image to the bucket and return its URL."""
+        try:
+            return await upload_data_url(data_url, prefix=prefix)
+        except StorageError as exc:
+            raise APIError(status.HTTP_400_BAD_REQUEST, "INVALID_IMAGE", str(exc)) from exc
+        except StorageUploadError as exc:
+            raise APIError(status.HTTP_502_BAD_GATEWAY, "UPLOAD_FAILED", str(exc)) from exc
 
     # ---------------- developer review ----------------
 

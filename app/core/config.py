@@ -1,5 +1,6 @@
 from typing import Literal
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -38,6 +39,28 @@ class Settings(BaseSettings):
 
     # CORS
     backend_cors_origins: list[str] = ["http://localhost:3000"]
+
+    # Object storage (Cloudflare R2, S3-compatible). Uploaded images are stored
+    # here and only their public URL is kept in the database. When unset, images
+    # fall back to inline base64 data URLs.
+    r2_endpoint: str | None = None
+    r2_access_key_id: str | None = None
+    r2_secret_access_key: str | None = None
+    r2_bucket: str | None = None
+    r2_public_url: str | None = None
+    upload_max_file_size_mb: int = 10
+
+    @field_validator(
+        "r2_endpoint",
+        "r2_access_key_id",
+        "r2_secret_access_key",
+        "r2_bucket",
+        "r2_public_url",
+        mode="before",
+    )
+    @classmethod
+    def _strip(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
 
 
 settings = Settings()  # type: ignore[call-arg]

@@ -4,6 +4,7 @@ from app.core.emails import email_domain_allowed
 from app.core.errors import APIError
 from app.core.firebase import InvalidFirebaseToken, verify_firebase_id_token
 from app.core.security import hash_password, verify_password
+from app.core.storage import StorageError, StorageUploadError, upload_data_url
 from app.db.models.user import Role, User
 from app.repositories.user import UserRepository
 from app.services.session import SessionStore
@@ -95,6 +96,26 @@ class AuthService:
         self._assert_active(user)
         sid = await self.sessions.create(user)
         return user, sid
+
+    async def update_profile(
+        self,
+        user: User,
+        *,
+        full_name: str | None,
+        avatar: str | None,
+    ) -> User:
+        if full_name is not None:
+            user.full_name = full_name.strip()
+        if avatar is not None:
+            try:
+                user.avatar = await upload_data_url(avatar, prefix="avatars")
+            except StorageError as exc:
+                raise APIError(status.HTTP_400_BAD_REQUEST, "INVALID_IMAGE", str(exc)) from exc
+            except StorageUploadError as exc:
+                raise APIError(
+                    status.HTTP_502_BAD_GATEWAY, "UPLOAD_FAILED", str(exc)
+                ) from exc
+        return await self.users.save(user)
 
     async def logout(self, sid: str) -> None:
         await self.sessions.delete(sid)
