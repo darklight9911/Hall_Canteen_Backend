@@ -1,16 +1,18 @@
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 
 from fastapi import status
 
 from app.core.errors import APIError
 from app.core.firebase import InvalidFirebaseToken, verify_firebase_id_token
 from app.core.storage import StorageError, StorageUploadError, upload_data_url
+from app.db.models.delivery_slot import DeliverySlot
 from app.db.models.food_item import FoodItem
 from app.db.models.partner_application import ApplicationStatus, PartnerApplication
 from app.db.models.restaurant import Restaurant
 from app.db.models.user import Role, User
 from app.repositories.partner import (
+    DeliverySlotRepository,
     FoodItemRepository,
     PartnerApplicationRepository,
     RestaurantRepository,
@@ -29,12 +31,14 @@ class PartnerService:
         restaurants: RestaurantRepository,
         items: FoodItemRepository,
         sessions: SessionStore,
+        slots: DeliverySlotRepository,
     ) -> None:
         self.users = users
         self.applications = applications
         self.restaurants = restaurants
         self.items = items
         self.sessions = sessions
+        self.slots = slots
 
     # ---------------- application (any Google account; DIU not required) ----------------
 
@@ -184,6 +188,7 @@ class PartnerService:
         category: str,
         image: str | None,
         is_available: bool,
+        slot_ids: list[uuid.UUID],
     ) -> FoodItem:
         restaurant = await self._require_restaurant(user)
         item = FoodItem(
@@ -195,7 +200,7 @@ class PartnerService:
             image=image,
             is_available=is_available,
         )
-        return await self.items.create(item)
+        return await self.items.create(item, slot_ids, restaurant.id)
 
     async def update_item(
         self,
@@ -208,7 +213,9 @@ class PartnerService:
         category: str | None = None,
         image: str | None = None,
         is_available: bool | None = None,
+        slot_ids: list[uuid.UUID] | None = None,
     ) -> FoodItem:
+        restaurant = await self._require_restaurant(user)
         item = await self._owned_item(user, item_id)
         if name is not None:
             item.name = name.strip()
@@ -222,11 +229,73 @@ class PartnerService:
             item.image = image
         if is_available is not None:
             item.is_available = is_available
-        return await self.items.save(item)
+        return await self.items.save(item, slot_ids, restaurant.id)
 
     async def delete_item(self, user: User, item_id: uuid.UUID) -> None:
         item = await self._owned_item(user, item_id)
         await self.items.delete(item)
+
+    # ---------------- delivery slots ----------------
+
+    async def list_slots(self, user: User) -> list[DeliverySlot]:
+        restaurant = await self._require_restaurant(user)
+        return await self.slots.list_by_restaurant(restaurant.id)
+
+    async def create_slot(
+        self,
+        user: User,
+        *,
+        label: str,
+        start_time: time,
+        end_time: time,
+        max_orders: int | None,
+        is_active: bool,
+    ) -> DeliverySlot:
+        restaurant = await self._require_restaurant(user)
+        slot = DeliverySlot(
+            restaurant_id=restaurant.id,
+            label=label.strip(),
+            start_time=start_time,
+            end_time=end_time,
+            max_orders=max_orders,
+            is_active=is_active,
+        )
+        return await self.slots.create(slot)
+
+    async def update_slot(
+        self,
+        user: User,
+        slot_id: uuid.UUID,
+        *,
+        label: str | None,
+        start_time: time | None,
+        end_time: time | None,
+        max_orders: int | None,
+        is_active: bool | None,
+    ) -> DeliverySlot:
+        slot = await self._owned_slot(user, slot_id)
+        if label is not None:
+            slot.label = label.strip()
+        if start_time is not None:
+            slot.start_time = start_time
+        if end_time is not None:
+            slot.end_time = end_time
+        if max_orders is not None:
+            slot.max_orders = max_orders
+        if is_active is not None:
+            slot.is_active = is_active
+        return await self.slots.save(slot)
+
+    async def delete_slot(self, user: User, slot_id: uuid.UUID) -> None:
+        slot = await self._owned_slot(user, slot_id)
+        await self.slots.delete(slot)
+
+    async def _owned_slot(self, user: User, slot_id: uuid.UUID) -> DeliverySlot:
+        restaurant = await self._require_restaurant(user)
+        slot = await self.slots.get_by_id(slot_id)
+        if slot is None or slot.restaurant_id != restaurant.id:
+            raise APIError(status.HTTP_404_NOT_FOUND, "SLOT_NOT_FOUND", "Delivery slot not found")
+        return slot
 
     async def _require_restaurant(self, user: User) -> Restaurant:
         restaurant = await self.restaurants.get_by_owner(user.id)

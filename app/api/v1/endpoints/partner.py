@@ -11,12 +11,16 @@ from app.db.models.partner_application import ApplicationStatus
 from app.db.models.user import Role, User
 from app.db.session import get_db
 from app.repositories.partner import (
+    DeliverySlotRepository,
     FoodItemRepository,
     PartnerApplicationRepository,
     RestaurantRepository,
 )
 from app.repositories.user import UserRepository
 from app.schemas.partner import (
+    DeliverySlotCreate,
+    DeliverySlotRead,
+    DeliverySlotUpdate,
     FoodItemCreate,
     FoodItemRead,
     FoodItemUpdate,
@@ -41,6 +45,7 @@ def _service(db: AsyncSession, redis: Redis) -> PartnerService:
         RestaurantRepository(db),
         FoodItemRepository(db),
         SessionStore(redis),
+        DeliverySlotRepository(db),
     )
 
 
@@ -144,6 +149,7 @@ async def create_item(
         category=body.category,
         image=body.image,
         is_available=body.is_available,
+        slot_ids=body.slot_ids,
     )
 
 
@@ -164,6 +170,7 @@ async def update_item(
         category=body.category,
         image=body.image,
         is_available=body.is_available,
+        slot_ids=body.slot_ids,
     )
 
 
@@ -175,3 +182,61 @@ async def delete_item(
     redis: Redis = Depends(get_redis),
 ) -> None:
     await _service(db, redis).delete_item(user, item_id)
+
+
+# ---------------- Delivery slots (partner; developer is superuser) ----------------
+
+
+@router.get("/slots", response_model=list[DeliverySlotRead])
+async def list_slots(
+    user: User = Depends(require_partner),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+) -> object:
+    return await _service(db, redis).list_slots(user)
+
+
+@router.post("/slots", response_model=DeliverySlotRead, status_code=status.HTTP_201_CREATED)
+async def create_slot(
+    body: DeliverySlotCreate,
+    user: User = Depends(require_partner),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+) -> object:
+    return await _service(db, redis).create_slot(
+        user,
+        label=body.label,
+        start_time=body.start_time,
+        end_time=body.end_time,
+        max_orders=body.max_orders,
+        is_active=body.is_active,
+    )
+
+
+@router.patch("/slots/{slot_id}", response_model=DeliverySlotRead)
+async def update_slot(
+    slot_id: uuid.UUID,
+    body: DeliverySlotUpdate,
+    user: User = Depends(require_partner),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+) -> object:
+    return await _service(db, redis).update_slot(
+        user,
+        slot_id,
+        label=body.label,
+        start_time=body.start_time,
+        end_time=body.end_time,
+        max_orders=body.max_orders,
+        is_active=body.is_active,
+    )
+
+
+@router.delete("/slots/{slot_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_slot(
+    slot_id: uuid.UUID,
+    user: User = Depends(require_partner),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+) -> None:
+    await _service(db, redis).delete_slot(user, slot_id)
